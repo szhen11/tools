@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """IVI POC Demo config tool.
 
-This tool is used to auto configure IVI POC Demo touch/keyboard/mouse related configs.
+This tool is used to auto configure IVI POC Demo touch/keyboard/mouse/
+audio/proxy/multiple hardware planes/openvino related configs.
 
 Precondition: 
     log into container of android: docker exec -it steam bash
@@ -10,7 +11,7 @@ Precondition:
     cd tools/ivi/
 
 Execution:
-    python3 demo_config.py [-i android_ip]
+    python3 demo_config.py [-i android_ip] [-l DEBUG|INFO]
 
 Author: shuang.zheng@intel.com
 
@@ -18,7 +19,7 @@ Modified:
 
 """
 import os, time, argparse, subprocess
-import re, traceback, logging, datetime, ipaddress
+import re, traceback, logging, datetime, ipaddress, json
 
 class ConfigureInputDevice():
     def __init__(self, outputdir='.'):
@@ -26,7 +27,7 @@ class ConfigureInputDevice():
         self._outputdir = outputdir
 
     def setup_adb_connection(self, ip):
-        print('='*20+'{:=<{width}}'.format(' Step 0. setup Adb connection with Android ', width=80))
+        print('='*20+'{:=<{width}}'.format(' Step 5.3. connect Android with IP', width=80))
         self.verify_adb()
         if ip is None:
             for i in range(5):
@@ -45,6 +46,7 @@ class ConfigureInputDevice():
             (output, err) = self.run_host_cmd('adb connect {}:5555'.format(ip))
             if 'connected to {}:5555'.format(ip) not in output:
                 msg = 'Failed to connect to Android with IP: {} {}'.format(output, err)
+                logging.error('Please make sure you input the correct Android IP, and enabled Adb Debugging in Android(quickly tap Settings->About->Build Number to Developer Options, and enable Adb debugging in it).')
                 logging.error(msg)
                 raise Exception(msg)
             self._adb = '{}-s {} '.format(self._adb, ip)
@@ -68,9 +70,75 @@ class ConfigureInputDevice():
         logging.info('Connect to android device successfully')
         # print('='*20+'{:=<{width}}'.format(' Step 0. connected to Android device successfully. ', width=80))
 
+    def config_docker_proxy(self):
+        print('='*20+'{:=<{width}}'.format(' Step 6.6. configure docker proxy if needed ', width=80))
+        logging .info('Please input the proxy url for container if you need it for installing ubuntu packages or downloading resources in the following configuration steps.\n         or press n and Enter to ignore this step.')
+        choice = input('INFO     [proxy url/n] ')
+        if choice in ['n', 'N', '']:
+            logging.info('You selected n, ignore this step.')
+            return False
+        else:
+            logging.info('You typed proxy url: {}'.format(choice))
+            (output, err) = self.run_host_cmd(self._adb+'shell docker ps --no-trunc | grep steam')
+            if 'steam' not in output:
+                logging.error('No steam container founded')
+                raise Exception('No steam container founded')
+            else:
+                container_id = output.strip().split()[0]
+                container_config = '/data/docker/lib/docker/containers/{}/config.v2.json'.format(container_id)
+                logging.debug('container config file: {}'.format(container_config))
+                container_config_host = os.path.join(self._outputdir, 'config.v2.json')
+                container_config_host2 = os.path.join(self._outputdir, 'config2.v2.json')
+                self.run_host_cmd(self._adb+'pull {} {}'.format(container_config, self._outputdir))
+                self.run_host_cmd('mv {} {}'.format(container_config_host, container_config_host2))
+                with open(container_config_host2, 'r') as f1:
+                    content = f1.read().strip()
+                    jcontent = None
+                    try:
+                        jcontent = json.loads(content)
+                        if 'Config' in jcontent and 'Env' in jcontent['Config']:
+                            http_item = None
+                            https_item = None
+                            for item in jcontent['Config']['Env']:
+                                if item.startswith('http_proxy'):
+                                    http_item = item
+                                elif item.startswith('https_proxy'):
+                                    https_item = item
+                            if http_item:
+                                jcontent['Config']['Env'].remove(http_item)
+                            if https_item:
+                                jcontent['Config']['Env'].remove(https_item)
+                            jcontent['Config']['Env'].append('http_proxy={}'.format(choice))
+                            jcontent['Config']['Env'].append('https_proxy={}'.format(choice))
+                        else:
+                            logging.warning("Can't find 'Config -> Env' in config.v2.json, ignore proxy configuration.")
+                            if 'Config' not in jcontent:
+                                jcontent['Config']={}
+                            jcontent['Config']['Env'] = []
+                            jcontent['Config']['Env'].append('http_proxy={}'.format(choice))
+                            jcontent['Config']['Env'].append('https_proxy={}'.format(choice))
+                    except Exception as e:
+                        logging.error('configure docker proxy failed: '+str(e))
+                        raise Exception(str(e))
+                    else:
+                        with open(container_config_host, 'w') as f2: 
+                            content2 = json.dumps(jcontent)
+                            f2.write(content2)
+                        self.run_host_cmd(self._adb+'push {} /data/docker/lib/docker/containers/{}/'.format(container_config_host, container_id))
+                        (output, err) = self.run_host_cmd(self._adb+'shell cat {}'.format(container_config))
+                        logging.debug(output)
+                        if choice not in output:
+                            raise Exception('Proxy {} not configured in container config file: {}'.format(choice, output))
+                        else:
+                            logging.info('Configure container proxy: {} done.'.format(choice))
+                            logging.info('You have configure the proxy of docker container, the config tool will direct you to reboot system. After the Android rebooted, you can rerun this tool to continue the configurations with proxy effectively.')
+        # print('='*20+'{:=<{width}}'.format(' Step 3. finished. ', width=80))
+        logging.info('Step 6.6 finished.')
+        return True
+    
     def configure_touch_for_android(self):
         # print('-'*20+'{:60s}'.format('Step 1. enable multiple touch screen(s) for Android')+'-'*20)
-        print('='*20+'{:=<{width}}'.format(' Step 1. enable multiple touch screen(s) for Android ', width=80))
+        print('='*20+'{:=<{width}}'.format(' Step 5.4. enable multiple touch screen(s) for Android ', width=80))
         logging.info('Please make sure the touch screen(s) connected to the iGPU before this configuration step!')
         TOUCH_DETECT_RETRY_TIMES = 10
         touch_device_list = []
@@ -80,15 +148,15 @@ class ConfigureInputDevice():
         for display_info in display_info_list:
             index += 1
             for i in range(TOUCH_DETECT_RETRY_TIMES):
-                print('-'*20+'{:-<{width}}'.format('Step 1.{}. detect the touch screen for Display {}'.format(index, display_info['displayId']), width=80))
-                logging.info('Start to detect touch screen for Display: Id={} uniqueId={} ...'.format(display_info['displayId'], display_info['uniqueId']))
-                logging.info('Launching Settings Application on Display {}'.format(display_info['displayId']))
+                print('-'*20+'{:-<{width}}'.format('Step 5.4.{}. detect the touch screen for Display {}'.format(index, display_info['uniqueId']), width=80))
+                logging.info('Starting to detect touch screen for Display: Id={} uniqueId={} port={} ...'.format(display_info['displayId'], display_info['uniqueId'], display_info['port']))
+                logging.info('Launching Settings Application on Display {}'.format(display_info['uniqueId']))
                 self.run_host_cmd('{} shell am force-stop com.android.car.settings'.format(self._adb))
                 self.run_host_cmd('{} shell am start --user 10 --display {} com.android.car.settings'.format(self._adb, display_info['displayId']))
                 self.run_host_cmd(self._adb + 'shell rm -rf /data/local/getevent.log')
                 self.run_host_cmd(self._adb + 'shell "getevent > /data/local/getevent.log 2>&1 &"')
                 logging.info('Please touch the screen which launching Setting Application, and then press Enter to continue;')
-                print('         Or press n and Enter to ignore this step 1.{} if the screen which launching Setting App is untouchable: '.format(index))
+                print('         Or press n and Enter to ignore this step if the screen which launching Setting App is untouchable: '.format(index))
                 choice = input('INFO     [y/n] ')
                 if choice == 'n':
                     logging.info('You selected n, ignore Step 1.{}.'.format(index))
@@ -140,7 +208,7 @@ class ConfigureInputDevice():
             for touch_device in touch_device_list:
                 display_info = touch_device[0]
                 touch_screen = touch_device[1]
-                logging.info('Start to create idc file for touch screen: {}. {}'.format(display_info['displayId'], touch_screen['Name']))
+                logging.info('Starting to create idc file for touch screen: {}. {}'.format(display_info['displayId'], touch_screen['Name']))
                 name = touch_screen['Location'].strip()
                 char_list = '/,:.'
                 for char in char_list:
@@ -163,7 +231,7 @@ class ConfigureInputDevice():
             for touch_device in touch_device_list:
                 display_info = touch_device[0]
                 touch_screen = touch_device[1]
-                logging.info('Start to create idc file for touch screen: {}.{}'.format(display_info['displayId'], touch_screen['Name']))
+                logging.info('Starting to create idc file for touch screen: {}.{}'.format(display_info['displayId'], touch_screen['Name']))
                 idc_file_name = os.path.join(self._outputdir,  
                     'Vendor_{}_Product_{}.idc'.format(touch_screen['vendor'], touch_screen['product']))
                 with open(idc_file_name, 'w') as f:
@@ -180,11 +248,109 @@ class ConfigureInputDevice():
                     logging.error(output) if output else ''
                     logging.error(err) if err else ''
         # print('='*20+'{:=<{width}}'.format(' Step 1. finished.', width=80))
-        logging.info('Step 1 finished.')
+        logging.info('Step 5.4 finished.')
+    
+    def enable_multiple_hardware_plan(self):
+        print('='*20+'{:=<{width}}'.format(' Step 5.5. enable multiple hardware plane to boost display performance ', width=80))
+        # print('='*20+'{:=<{width}}'.format(' Step 3. finished. ', width=80))
+        logging.info('Starting to set /vendor/build.prop (this may take a few seconds) ...')
+        self.run_host_cmd(self._adb+'pull /vendor/build.prop {}'.format(self._outputdir))
+        build_prop_old = os.path.join(self._outputdir, 'build_old.prop')
+        build_prop = os.path.join(self._outputdir, 'build.prop')
+        self.run_host_cmd('mv {} {}'.format(build_prop, build_prop_old))
+        enable_flag = False
+        num_flag = False
+        with open(build_prop_old, 'r') as f1:
+            with open(build_prop, 'w') as f2:
+                for line in f1.readlines():
+                    if line.startswith('vendor.hwcomposer.planes.enabling='):
+                        enable_flag = True
+                        f2.write('vendor.hwcomposer.planes.enabling=1\n')
+                    elif line.startswith('vendor.hwcomposer.planes.num='):
+                        num_flag = True
+                        f2.write('vendor.hwcomposer.planes.num=2\n')
+                    else:
+                        f2.write(line)
+            if not enable_flag:
+                with open(build_prop, 'a') as f2:
+                    f2.write('\nvendor.hwcomposer.planes.enabling=1')
+            if not num_flag:
+                with open(build_prop, 'a') as f2:
+                    f2.write('\nvendor.hwcomposer.planes.num=2')
+        self.run_host_cmd(self._adb+'push {} /vendor/'.format(build_prop))
+        (output, err) = self.run_host_cmd(self._adb+'shell cat /vendor/build.prop|grep vendor.hwcomposer.planes.')
+        logging.debug(output)
+        if '.enabling=1' not in output and '.num=2' not in output:
+            logging.error('Configure multiple hardware plan in build.prop failed: {}'.format(output))
+        else:
+            logging.info('Configure multiple hardware plan in build.prop successfully.')
+        logging.info('Step 5.5 finished.')
+    
+    def configure_audio(self):
+        print('='*20+'{:=<{width}}'.format(' Step 6.3. Linux Container Audio Configuration ', width=80))
+        logging.info('Starting to install speaker-test to test the audio in container')
+        (output, err) = self.run_host_cmd('sudo apt install -y alsa-utils && echo "package install successfully."')
+        logging.debug(output+err)
+        if 'package install successfully.' not in output:
+            logging.error('Install alsa-utils failed: {}'.format(output))
+            raise Exception(output)
+        logging.info('Starting speaker-test, make sure at least one audio output device is connected to Android host, for example, a headset and listen to the audio, You should hear some noice from it.')
+        self.run_host_cmd("speaker-test > /dev/null 2>&1 &")
+        #os.system('speaker-test 2>&1 &')
+        logging.info('If you hear some noice from the audio device, press n and Enter to ignore sound card config; press other keys to configure sound cards:')
+        choice = input('INFO     Configure sound card? [y/n] ')
+        if choice in ['n']:
+            logging.info('You selected n, the audio is working properly and no need to configure sound cards.')
+        else:
+            logging.info('You did not select yes, start to configure sound card, detected sound cards:')
+            (output, err) = self.run_host_cmd('cat /proc/asound/cards')
+            audio_device_list = []
+            start_flag = False
+            audio_device = {}
+            for line in output.split('\n'):
+                if line.strip() and line.strip().split()[0].isdigit() and not start_flag:
+                    start_Flag = True
+                    audio_device= {'id': line.strip().split()[0], 'name1': ' '.join(line.strip().split()[1:]), 'name2': ''}
+                elif start_Flag:
+                    audio_device['name2'] = line.strip()
+                    audio_device_list.append(audio_device)
+                    audio_device = {}
+                    start_Flag = False
+            for audio_device in audio_device_list:
+                logging.info('   ID:{} {} {}'.format(audio_device['id'], audio_device['name1'], audio_device['name2']))
+            id_list = [audio_device['id'] for audio_device in audio_device_list]
+            for i in range(5):
+                choice = input('INFO     Which sound card do you want to configure to use? Press the ID and Enter, or press n and enter to ignore this step: ')
+                if choice in ['n']:
+                    logging.warning('You selected n, ignore this step.')
+                    return
+                elif choice not in id_list:
+                    logging.warning('{} is not in sound card list: {}'.format(choice, str(id_list)))
+                else:
+                    logging.info('Starting to configure sound card {}'.format(choice))
+                    self.run_host_cmd('''sudo sh -c "echo 'defaults.pcm.card {}\ndefaults.ctl.card {}' > /etc/asound.conf"'''.format(choice, choice))
+                    self.run_host_cmd('''sudo sh -c "echo 'defaults.pcm.card {}\ndefaults.ctl.card {}' > /home/wid/.asoundrc"'''.format(choice, choice))
+                    (output1, err1) = self.run_host_cmd('cat /etc/asound.conf')
+                    logging.debug(output1)
+                    (output2, err2) = self.run_host_cmd('cat /home/wid/.asoundrc')
+                    logging.debug(output2)
+                    if 'defaults.pcm.card {}'.format(choice) in output1 and 'defaults.pcm.card {}'.format(choice) in output2 \
+                            and 'defaults.ctl.card {}'.format(choice) in output1 and 'defaults.ctl.card {}'.format(choice) in output2:
+                        logging.info('Configure sound card finished.')
+                    else:
+                        logging.error('Configure sound card failed: ')
+                        logging.error('/etc/asound.conf: '+output1)
+                        logging.error('/home/wid/.asoundrc: '+output2)
+                    break
+            if i >= 5:
+                logging.warning('retype extened maxinum number, ignore this step.')
+        self.run_host_cmd("ps -ef|grep speaker-test|grep -v grep|awk '{print \$2}'|xargs kill -9")
+        # print('='*20+'{:=<{width}}'.format(' Step 3. finished. ', width=80))
+        logging.info('Step 6.3 finished.')
     
     def configure_keyboard_mouse_for_container(self):
         #print('-'*20+'{:60s}'.format('Step 2. configure keyboard and mouse for container')+'-'*20)
-        print('='*20+'{:=<{width}}'.format(' Step 2. configure keyboard and mouse for container ', width=80))
+        print('='*20+'{:=<{width}}'.format(' Step 6.4. configure keyboard and mouse for container ', width=80))
         input_device_list = self.get_input_device_list()
         keyboards = []
         mouses = []
@@ -214,87 +380,94 @@ class ConfigureInputDevice():
             logging.warning('No keyboard and Mouse to be isolated for container.')
 
         if disable_device_ids:
-            logging.info('Start to disable the device(s) from Android host')
+            logging.info('Starting to disable the device(s) from Android host')
             self.run_host_cmd(self._adb + 'shell "setprop persist.sys.disable.deviceid {}"'.format(disable_device_ids))
             (output, err) = self.run_host_cmd(self._adb + 'shell getprop persist.sys.disable.deviceid')
             if disable_device_ids in output:
-                logging.debug(output)
+                logging.debug(output.strip())
                 logging.info('Configuration for isolating the device(s) from Android host successfully.')
             else:
                 logging.error('Configuration for isolating the device(s) from Android host failed:')
                 logging.error(output) if output else ''
                 logging.error(err) if err else ''
-        logging.info('Update udev rules to ignore the keyboard/mouse which are not isolated to container.')
-        multi_flag = False
-        ignore_mouse_file_name = '99-ignore-mouses.rules'
-        if(len(selected_mouses)<len(mouses)):
-            s_ids = [m['ID'] for m in selected_mouses]
-            remain_mouse = None
-            for mouse in mouses:
-                if (mouse['ID'] not in s_ids) and mouse['vendor'] and mouse['product']:
-                    remain_mouse = mouse
-                    break
-            if remain_mouse is not None:
-                multi_flag = True
-                logging.debug('disable the other mouse in container: {}'.format(remain_mouse['Name']))
-                with open(os.path.join(self._outputdir, ignore_mouse_file_name), 'w') as f:
-                    f.write('ACTION=="add|change", KERNEL=="event[0-9]*", \\\n')
-                    f.write('   ENV{{ID_VENDOR_ID}}=="{}", \\\n'.format(remain_mouse['vendor']))
-                    f.write('   ENV{{ID_MODEL_ID}}=="{}", \\\n'.format(remain_mouse['product']))
-                    f.write('   ENV{{LIBINPUT_IGNORE_DEVICE}}="1"')
-                self.run_host_cmd('sudo cp {} /etc/udev/rules.d/'.format(os.path.join(self._outputdir, ignore_mouse_file_name)))
-        if not multi_flag:
-            logging.debug('No other mouse need to be disabled in container')
-            with open(os.path.join(self._outputdir, ignore_mouse_file_name), 'w') as f:
-                f.write('ACTION=="add|change", KERNEL=="event[0-9]*", \\\n')
-                f.write('   ENV{{ID_VENDOR_ID}}=="{}", \\\n'.format('0000'))
-                f.write('   ENV{{ID_MODEL_ID}}=="{}", \\\n'.format('0000'))
-                f.write('   ENV{{LIBINPUT_IGNORE_DEVICE}}="1"')
-            self.run_host_cmd('sudo cp {} /etc/udev/rules.d/'.format(os.path.join(self._outputdir, ignore_mouse_file_name)))
-        multi_flag = False
-        ignore_keyboard_file_name = '99-ignore-keyboards.rules'
-        if(len(selected_keyboards)<len(keyboards)):
-            s_ids = [k['ID'] for k in selected_keyboards]
-            remain_keyboard = None
-            for keyboard in keyboards:
-                if (keyboard['ID'] not in s_ids) and keyboard['vendor'] and keyboard['product']:
-                    remain_keyboard = keyboard
-                    break
-            if remain_keyboard is not None:
-                multi_flag = True
-                logging.debug('disable the other keyboard in container: {}'.format(remain_keyboard['Name']))
-                with open(os.path.join(self._outputdir, ignore_keyboard_file_name), 'w') as f:
-                    f.write('ACTION=="add|change", KERNEL=="event[0-9]*", \\\n')
-                    f.write('   ENV{{ID_VENDOR_ID}}=="{}", \\\n'.format(remain_keyboard['vendor']))
-                    f.write('   ENV{{ID_MODEL_ID}}=="{}", \\\n'.format(remain_keyboard['product']))
-                    f.write('   ENV{{LIBINPUT_IGNORE_DEVICE}}="1"')
-                self.run_host_cmd('sudo cp {} /etc/udev/rules.d/'.format(os.path.join(self._outputdir, ignore_keyboard_file_name)))
-        if not multi_flag:
-            logging.debug('No other mouse need to be disabled in container')
-            with open(os.path.join(self._outputdir, ignore_keyboard_file_name), 'w') as f:
-                f.write('ACTION=="add|change", KERNEL=="event[0-9]*", \\\n')
-                f.write('   ENV{{ID_VENDOR_ID}}=="{}", \\\n'.format('0000'))
-                f.write('   ENV{{ID_MODEL_ID}}=="{}", \\\n'.format('0000'))
-                f.write('   ENV{{LIBINPUT_IGNORE_DEVICE}}="1"')
-            self.run_host_cmd('sudo cp {} /etc/udev/rules.d/'.format(os.path.join(self._outputdir, ignore_keyboard_file_name)))
-
         # print('='*20+'{:=<{width}}'.format(' Step 2. finished. ', width=80))
-        logging.info('Step 2 finished.')
+        logging.info('Step 6.4 finished.')
 
+    def download_install_openvino(self):
+        print('='*20+'{:=<{width}}'.format(' Step 6.8. Download OpenVino from Ubuntu 22.04 and build OpenVino samples ', width=80))
+        logging.info('Tring to wget openvino_opencv_build.tar.gz...')
+        (output, err) = self.run_host_cmd('sudo apt install -y wget ssh && echo "package install successfully."')
+        logging.debug(output+err)
+        if 'package install successfully.' not in output:
+            logging.warning('Install wget ssh failed: {}'.format(output+err))
+        url = input('INFO     Please type the url of openvino_opencv_build.tar.gz or press n to ignore this step: ')
+        if url in ['n']:
+            logging.warning('You selected n, ignore this step.')
+            return
+        openvino_name = 'openvino_opencv_build.tar.gz'
+        libtbb_name = 'lib_tbb.tar.gz'
+        logging.info('Starting to download OpenVino packages from url: {}'.format(url))
+        (output, err) = self.run_host_cmd('rm -rf /home/wid/{} && wget -O /home/wid/{} {} && echo "run host command successfully."'.format(openvino_name, openvino_name, url))
+        logging.debug(output+err)
+        if 'run host command successfully.' not in output:
+            raise Exception(output+err)
+        (output, err) = self.run_host_cmd('rm -rf /home/wid/{} && wget -O /home/wid/{} {} && echo "run host command successfully."'.format(libtbb_name, libtbb_name, url.replace(openvino_name, libtbb_name)))
+        logging.debug(output+err)
+        if 'run host command successfully.' not in output:
+            raise Exception(output+err)
+        logging.info('Starting to extract lib_tbb.tar.gz and copy lib_tbb/* to /usr/lib/x86_64-linux-gnu/')
+        (output, err) = self.run_host_cmd('cd /home/wid/ && rm -rf lib_tbb && tar -zxvf {} && sudo cp lib_tbb/* /usr/lib/x86_64-linux-gnu/ && echo "run host command successfully."'.format(libtbb_name))
+        logging.debug(output+err)
+        if 'run host command successfully.' not in output:
+            raise Exception(output+err)
+        logging.info('Starting to extract {}...'.format(openvino_name))
+        (output, err) = self.run_host_cmd('cd /home/wid && rm -rf ov_oc && tar zxvf {} && echo "run host command successfully."'.format(openvino_name))
+        logging.debug(output+err)
+        if 'run host command successfully.' not in output:
+            raise Exception(output+err)
+        logging.info('Starting to update /etc/apt/sources.list in order to run apt-get update'.format(openvino_name, 'sources.list'))
+        (output, err) = self.run_host_cmd('sudo cp /etc/apt/sources.list /etc/apt/sources.list.orig && sudo wget -O /etc/apt/sources.list {} && echo "run host command successfully."'.format(url.replace(openvino_name, 'sources.list')))
+        logging.debug(output+err)
+        logging.info('Starting to run cd /home/wid/ov_oc && source setupvars.sh && cd /home/wid/ov_oc/install_dependencies && ./install_openvino_dependencies.sh...')
+        (output, err) = self.run_host_cmd('''sed -i "s/apt-get install/apt-get install -y/g" /home/wid/ov_oc/install_dependencies/install_openvino_dependencies.sh && echo "run host command successfully."''', timeout=300)
+        logging.debug(output+err)
+        (output, err) = self.run_host_cmd('''/bin/bash -c "cd /home/wid/ov_oc && source setupvars.sh && cd /home/wid/ov_oc/install_dependencies && sudo -E ./install_openvino_dependencies.sh && echo 'run host command successfully.'"''', timeout=300)
+        logging.debug(output+err)
+        if 'run host command successfully.' not in output:
+            raise Exception(output+err)
+        logging.info('Starting to build OpenVino samples.')
+        (output, err) = self.run_host_cmd('''/bin/bash -c "cd /home/wid/ov_oc && source setupvars.sh && cd /home/wid/ov_oc/samples/cpp/ && rm -rfd build && mkdir build && cd build && cmake .. -DOpenCV_DIR="home/wid/ov_oc/build_opencv/" -DOpenCL_LIBRARY=/usr/lib/x86_64-linux-gnu -DOpenCL_INCLUDE_DIR=/usr/include && echo 'run host command successfully.'"''', timeout=300)
+        logging.debug(output+err)
+        if 'run host command successfully.' not in output:
+            raise Exception(output+err)
+        (output, err) = self.run_host_cmd('''/bin/bash -c "cd /home/wid/ov_oc && source setupvars.sh && cd /home/wid/ov_oc/samples/cpp/build && make -j5 && echo 'run host command successfully.'"''', timeout=400)
+        logging.debug(output+err)
+        if 'run host command successfully.' not in output:
+            raise Exception(output+err)
+        logging.info('Openvino installation finished. You can run samples with following steps:') 
+        logging.info('$ cd intel64/')
+        logging.info('$ ./hello_query_device')
+        logging.info('this should list dGPU as one of the devices like:')
+        logging.info('    "Immutable: DEVICE_ARCHITECTURE : GPU.12.7.1')
+        logging.info('    [ INFO ]                Immutable: FULL_DEVICE_NAME : Intel(R) Graphics [0x56c0] (dGPU)"')
+        logging.info('Try running benchmark app')
+        logging.info('$ ./benchmark_app -m <path-to-ir-xml-model> -d GPU')
+        logging.info('Step 6.8 finished.')
+    
     def install_resources(self):
         print('='*20+'{:=<{width}}'.format(' Step 3. install resources for demo ', width=80))
         # print('='*20+'{:=<{width}}'.format(' Step 3. finished. ', width=80))
         logging.info('Step 3 finished.')
     
     def reboot_android(self):
-        print('='*20+'{:=<{width}}'.format('  Step 4. reboot Android to make the configuration effetctive', width=80))
+        print('='*20+'{:=<{width}}'.format('  Step Reboot. reboot Android to make the configuration effetctive', width=80))
         choice = input('INFO     Do you want to adb reboot Android to make the configuration effective? [y/n] ')
-        if 'y' in choice:
+        if choice in ['y']:
             self.run_host_cmd(self._adb + 'reboot')
         else:
             logging.info('Ignore this step, please reboot Android by yourself.')
         # print('{:=<{width}}'.format(' Step 4. adb reoboot finished. ', width=80))
-        logging.info('Step 4 finished.')
+        logging.info('Step Reboot finished.')
         # print('='*20+'{:=<{width}}'.format('  Step 4. finished.', width=80))
     
     def get_input_device_list(self):
@@ -350,7 +523,7 @@ class ConfigureInputDevice():
             if display_info_flag:
                 if line.strip().startswith('Input Classifier State:') or line.strip().startswith('Input Dispatcher State:'):
                     break
-                if line.strip().startswith('Viewport INTERNAL:'):
+                if line.strip().startswith('Viewport INTERNAL:') or line.strip().startswith('Viewport EXTERNAL:'):
                     display_info_list.append({'Viewport': line.strip()[18:]})
                 continue
         re_viewport = re.compile('displayId=(\d+), uniqueId=(.*), port=(\d+), orientation=(\d+), logicalFrame')
@@ -448,22 +621,22 @@ class ConfigureInputDevice():
             logging.info('Select the detected {} {} device(s) isolated for container'.format(len(input_device_list), device_type))
             selected_input_devices = input_device_list
         elif len(input_device_list) > num:
-            select_msg = 'INFO     Detected more than {} {} device.         \nWhich {} to be configured to docker container? Type device ID and Enter to select or press Enter to select the first {}:\n'.format(num, device_type, device_type, num)
+            select_msg = 'INFO    Detected more than {} {} device.\nWhich {} to be configured to docker container? Type device ID and Enter to select or press Enter to select the first one:\n'.format(num, device_type, device_type)
             for input_device in input_device_list:
-                select_msg += '         ID:{}  Name:{}  Location:{}  Identifier:{}\n'.format(input_device['ID'], input_device['Name'], input_device['Location'], input_device['Identifier'])
-            select_msg += 'INFO     Type ID(s): '
-            id_list = [input_device['ID'] for input_device in input_device_list]
+                select_msg += '        ID:{}  Name:{}  Location:{}  Identifier:{}\n'.format(input_device['ID'], input_device['Name'], input_device['Location'], input_device['Identifier'])
+            select_msg += 'INFO    Type ID(s): '
+            id_list = [input_device_list['ID'] for input_device in input_device_list]
             selected_ids = []
             for i in range(10):
                 ids = input(select_msg)
                 selected_ids = []
-                if ids == '':
+                if sid == '':
                     selected_ids = id_list[:num]
                     logging.info('Selected the first {} device(s) by default.'.format(num))
                     break
                 sids = ids.split(',')
                 for sid in sids:
-                    if sid.strip().isdigit() and int(sid.strip()) in id_list:
+                    if sid.strip() in id_lists:
                         selected_ids.append(sid.strip())
                 if len(selected_ids) == num:
                     logging.info('Selected device ID(s): {}'.format(','.join(selected_ids)))
@@ -475,7 +648,7 @@ class ConfigureInputDevice():
                 selected_ids = id_list[:num]
             
             for input_device in input_device_list:
-                if str(input_device['ID']) in selected_ids:
+                if input_device['ID'] in selected_ids:
                     selected_input_devices.append(input_device)
         return selected_input_devices
 
@@ -486,12 +659,12 @@ class ConfigureInputDevice():
             logging.error(msg)
             raise Exception(msg)
 
-    def run_host_cmd(self, cmd):
+    def run_host_cmd(self, cmd, timeout=30):
         output = ''
         errmsg = ''
         try:
             logging.debug('Run host command: {}'.format(cmd))
-            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, shell=True, timeout=30).decode("utf-8")
+            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, shell=True, timeout=timeout).decode("utf-8")
         except subprocess.CalledProcessError as ex:
             errmsg = ex.output.decode().strip()
             msg = '''Run host command failed:
@@ -516,13 +689,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='configure demo setup.')
     parser.add_argument("-i", "--ip", dest="ip", default=None,
                     help="IP Address of Android")
+    parser.add_argument("-l", "--loglevel", dest="loglevel", default='INFO',
+                    help="IP Address of Android")
     parser.add_argument("-o", "--outputdir", dest="outputdir", default=outputdir,
                     help="the directory to store logs")
     args = parser.parse_args()
 
+    if args.loglevel == 'DEBUG':
+        loglevel = logging.DEBUG
+    else:
+        loglevel = logging.INFO
     os.makedirs(outputdir)
     logging.basicConfig(
-        level=logging.INFO,
+        level=loglevel,
         format="%(levelname)-8s %(message)s",
         handlers=[
             logging.FileHandler("{0}/{1}.log".format(outputdir, 'execution')),
@@ -532,9 +711,14 @@ if __name__ == "__main__":
 
     config = ConfigureInputDevice(args.outputdir)
     config.setup_adb_connection(args.ip)
-    config.configure_touch_for_android()
-    config.configure_keyboard_mouse_for_container()
-    config.install_resources()
+    configed = config.config_docker_proxy()
+    if not configed:
+        config.configure_touch_for_android()
+        config.enable_multiple_hardware_plan()
+        config.configure_audio()
+        config.configure_keyboard_mouse_for_container()
+        config.download_install_openvino()
+        # config.install_resources()
     config.reboot_android()
     print('='*20+'{:=<{width}}'.format(' ALL DONE ', width=80))
 
