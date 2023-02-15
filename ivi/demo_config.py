@@ -1,12 +1,13 @@
-# -*- coding: utf-8 -*-
+# -* coding: utf-8 -*-
 """IVI POC Demo config tool.
 
 This tool is used to auto configure IVI POC Demo touch/keyboard/mouse/
-audio/proxy/multiple hardware planes/openvino related configs.
+audio/multiple hardware planes/openvino related configs.
 
 Precondition: 
-    log into container of android: docker exec -it steam bash
-    apt-get install python3 git adb
+    log into container of android: docker exec -it steam bash;
+    configure apt proxy and source.lists if needed in your network;
+    sudo apt-get update && sudo apt-get install -y adb
     git clone https://github.com/szhen11/tools.git
     cd tools/ivi/
 
@@ -144,19 +145,25 @@ class ConfigureInputDevice():
         touch_device_list = []
         input_device_list = self.get_input_device_list()
         display_info_list = self.get_display_info_list()
+        (output, err) = self.run_host_cmd(self._adb+'uninstall com.intel.touchme')
+        logging.debug(output+err)
+        (output, err) = self.run_host_cmd(self._adb+'install -r TouchMe.apk')
+        logging.debug(output+err)
+        if err:
+            logging.error('install TouchMe.apk failed: '+err)
         index = 0
         for display_info in display_info_list:
             index += 1
             for i in range(TOUCH_DETECT_RETRY_TIMES):
                 print('-'*20+'{:-<{width}}'.format('Step 5.4.{}. detect the touch screen for Display {}'.format(index, display_info['uniqueId']), width=80))
                 logging.info('Starting to detect touch screen for Display: Id={} uniqueId={} port={} ...'.format(display_info['displayId'], display_info['uniqueId'], display_info['port']))
-                logging.info('Launching Settings Application on Display {}'.format(display_info['uniqueId']))
-                self.run_host_cmd('{} shell am force-stop com.android.car.settings'.format(self._adb))
-                self.run_host_cmd('{} shell am start --user 10 --display {} com.android.car.settings'.format(self._adb, display_info['displayId']))
+                logging.info('Launching TouchMe Application on Display {}'.format(display_info['uniqueId']))
+                self.run_host_cmd('{} shell am force-stop com.intel.touchme'.format(self._adb))
+                self.run_host_cmd('{} shell am start --user 10 --display {} -n "com.intel.touchme/com.intel.touchme.MainActivity" -a android.intent.action.MAIN -c android.intent.category.LAUNCHER'.format(self._adb, display_info['displayId']))
                 self.run_host_cmd(self._adb + 'shell rm -rf /data/local/getevent.log')
                 self.run_host_cmd(self._adb + 'shell "getevent > /data/local/getevent.log 2>&1 &"')
-                logging.info('Please touch the screen which launching Setting Application, and then press Enter to continue;')
-                print('         Or press n and Enter to ignore this step if the screen which launching Setting App is untouchable: '.format(index))
+                logging.info('Please touch the screen which launching TouchMe Application, and then press Enter to continue;')
+                print('         Or press n and Enter to ignore this step if the screen which launching TouchMe App is untouchable: '.format(index))
                 choice = input('INFO     [y/n] ')
                 if choice == 'n':
                     logging.info('You selected n, ignore Step 1.{}.'.format(index))
@@ -253,6 +260,20 @@ class ConfigureInputDevice():
     def enable_multiple_hardware_plan(self):
         print('='*20+'{:=<{width}}'.format(' Step 5.5. enable multiple hardware plane to boost display performance ', width=80))
         # print('='*20+'{:=<{width}}'.format(' Step 3. finished. ', width=80))
+        (output, err) = self.run_host_cmd(self._adb+'shell ls /dev/dri | wc -l')
+        num = 0
+        for line in output.split('\n'):
+            if line.strip().isdigit():
+                num = int(line.strip())
+                break
+        if num < 2:
+            logging.error('file check in /dev/dri of Android failed: {}'.format(output+err))
+            logging.info('Ignore this step.')
+            return
+        if num > 2:
+            logging.info('The Android is AaaG and no need to enable multiple hardware planes')
+            return
+        logging.info('Starting to enable multiple hardware planes on Android BM')
         logging.info('Starting to set /vendor/build.prop (this may take a few seconds) ...')
         self.run_host_cmd(self._adb+'pull /vendor/build.prop {}'.format(self._outputdir))
         build_prop_old = os.path.join(self._outputdir, 'build_old.prop')
@@ -292,12 +313,14 @@ class ConfigureInputDevice():
         (output, err) = self.run_host_cmd('sudo apt install -y alsa-utils && echo "package install successfully."')
         logging.debug(output+err)
         if 'package install successfully.' not in output:
-            logging.error('Install alsa-utils failed: {}'.format(output))
+            logging.error('Install alsa-utils for speaker-test failed: {}'.format(output))
             raise Exception(output)
-        logging.info('Starting speaker-test, make sure at least one audio output device is connected to Android host, for example, a headset and listen to the audio, You should hear some noice from it.')
+        logging.info('Starting speaker-test, make sure at least one audio output device is connected to Android host,')
+        logging.info('for example, a headset and listen to the audio, You should hear some noice from it.')
         self.run_host_cmd("speaker-test > /dev/null 2>&1 &")
         #os.system('speaker-test 2>&1 &')
-        logging.info('If you hear some noice from the audio device, press n and Enter to ignore sound card config; press other keys to configure sound cards:')
+        logging.info('If you hear some noise from the audio device, press n and Enter to ignore sound card config;')
+        print('         press other keys to configure sound cards:')
         choice = input('INFO     Configure sound card? [y/n] ')
         if choice in ['n']:
             logging.info('You selected n, the audio is working properly and no need to configure sound cards.')
@@ -395,47 +418,57 @@ class ConfigureInputDevice():
 
     def download_install_openvino(self):
         print('='*20+'{:=<{width}}'.format(' Step 6.8. Download OpenVino from Ubuntu 22.04 and build OpenVino samples ', width=80))
-        logging.info('Tring to wget openvino_opencv_build.tar.gz...')
-        (output, err) = self.run_host_cmd('sudo apt install -y wget ssh && echo "package install successfully."')
-        logging.debug(output+err)
-        if 'package install successfully.' not in output:
-            logging.warning('Install wget ssh failed: {}'.format(output+err))
-        url = input('INFO     Please type the url of openvino_opencv_build.tar.gz or press n to ignore this step: ')
+        logging.info('Tring to get openvino_opencv_build.tar.gz...')
+        # (output, err) = self.run_host_cmd('sudo apt install -y wget ssh && echo "package install successfully."')
+        # logging.debug(output+err)
+        # if 'package install successfully.' not in output:
+        #     logging.warning('Install wget ssh failed: {}'.format(output+err))
+        logging.info('Please type the wget url or location of openvino_opencv_build.tar.gz/lib_tbb.tar.gz or press n and Enter to ignore this step:')
+        url = input('INFO     [wget url/local path/n] ')
         if url in ['n']:
             logging.warning('You selected n, ignore this step.')
             return
-        openvino_name = 'openvino_opencv_build.tar.gz'
-        libtbb_name = 'lib_tbb.tar.gz'
-        logging.info('Starting to download OpenVino packages from url: {}'.format(url))
-        (output, err) = self.run_host_cmd('rm -rf /home/wid/{} && wget -O /home/wid/{} {} && echo "run host command successfully."'.format(openvino_name, openvino_name, url))
-        logging.debug(output+err)
-        if 'run host command successfully.' not in output:
-            raise Exception(output+err)
-        (output, err) = self.run_host_cmd('rm -rf /home/wid/{} && wget -O /home/wid/{} {} && echo "run host command successfully."'.format(libtbb_name, libtbb_name, url.replace(openvino_name, libtbb_name)))
-        logging.debug(output+err)
-        if 'run host command successfully.' not in output:
-            raise Exception(output+err)
+        if os.path.isfile(url) and url.endswith('openvino_opencv_build.tar.gz'):
+            logging.info('You input a local location for openvino packages, no need to wget')
+            openvino_name = url
+            libtbb_name = url.replace('openvino_opencv_build.tar.gz', 'lib_tbb.tar.gz')
+        else:
+            openvino_name = '/home/wid/openvino_opencv_build.tar.gz'
+            libtbb_name = '/home/wid/lib_tbb.tar.gz'
+            logging.info('It is not a local file, start to download OpenVino packages from url:')
+            logging.info('{}'.format(url))
+            (output, err) = self.run_host_cmd('rm -rf {} && wget -O {} {} && echo "run host command successfully."'.format(openvino_name, openvino_name, url))
+            logging.debug(output+err)
+            if 'run host command successfully.' not in output:
+                logging.error('wget {} failed, please make sure the openvino_opencv_build.tar.gz can be wget in container'.format(url))
+                raise Exception(output+err)
+            (output, err) = self.run_host_cmd('rm -rf {} && wget -O {} {} && echo "run host command successfully."'.format(libtbb_name, libtbb_name, url.replace('openvino_opencv_build.tar.gz', 'lib_tbb.tar.gz')))
+            logging.debug(output+err)
+            if 'run host command successfully.' not in output:
+                logging.error('wget {} failed, please make sure the lib_tbb.tar.gz can be wget in container'.format(url.replace(openvino_name, libtbb_name)))
+                raise Exception(output+err)
         logging.info('Starting to extract lib_tbb.tar.gz and copy lib_tbb/* to /usr/lib/x86_64-linux-gnu/')
-        (output, err) = self.run_host_cmd('cd /home/wid/ && rm -rf lib_tbb && tar -zxvf {} && sudo cp lib_tbb/* /usr/lib/x86_64-linux-gnu/ && echo "run host command successfully."'.format(libtbb_name))
+        (output, err) = self.run_host_cmd('rm -rf /home/wid/lib_tbb && tar -zxvf {} -C /home/wid/ && sudo cp /home/wid/lib_tbb/* /usr/lib/x86_64-linux-gnu/ && echo "run host command successfully."'.format(libtbb_name))
         logging.debug(output+err)
         if 'run host command successfully.' not in output:
             raise Exception(output+err)
         logging.info('Starting to extract {}...'.format(openvino_name))
-        (output, err) = self.run_host_cmd('cd /home/wid && rm -rf ov_oc && tar zxvf {} && echo "run host command successfully."'.format(openvino_name))
+        (output, err) = self.run_host_cmd('rm -rf /home/wid/ov_oc && tar -zxvf {} -C /home/wid/ && echo "run host command successfully."'.format(openvino_name))
         logging.debug(output+err)
         if 'run host command successfully.' not in output:
             raise Exception(output+err)
-        logging.info('Starting to update /etc/apt/sources.list in order to run apt-get update'.format(openvino_name, 'sources.list'))
-        (output, err) = self.run_host_cmd('sudo cp /etc/apt/sources.list /etc/apt/sources.list.orig && sudo wget -O /etc/apt/sources.list {} && echo "run host command successfully."'.format(url.replace(openvino_name, 'sources.list')))
-        logging.debug(output+err)
-        logging.info('Starting to run cd /home/wid/ov_oc && source setupvars.sh && cd /home/wid/ov_oc/install_dependencies && ./install_openvino_dependencies.sh...')
+        #logging.info('Starting to update /etc/apt/sources.list in order to run apt-get update'.format(openvino_name, 'sources.list'))
+        #(output, err) = self.run_host_cmd('sudo cp /etc/apt/sources.list /etc/apt/sources.list.orig && sudo wget -O /etc/apt/sources.list {} && echo "run host command successfully."'.format(url.replace(openvino_name, 'sources.list')))
+        #logging.debug(output+err)
+        logging.info('Starting to install openvino dependencies...')
         (output, err) = self.run_host_cmd('''sed -i "s/apt-get install/apt-get install -y/g" /home/wid/ov_oc/install_dependencies/install_openvino_dependencies.sh && echo "run host command successfully."''', timeout=300)
         logging.debug(output+err)
         (output, err) = self.run_host_cmd('''/bin/bash -c "cd /home/wid/ov_oc && source setupvars.sh && cd /home/wid/ov_oc/install_dependencies && sudo -E ./install_openvino_dependencies.sh && echo 'run host command successfully.'"''', timeout=300)
         logging.debug(output+err)
         if 'run host command successfully.' not in output:
+            logging.error('install openvino dependencies failed, please make sure the apt and network works properly in container')
             raise Exception(output+err)
-        logging.info('Starting to build OpenVino samples.')
+        logging.info('Starting to build OpenVino samples...')
         (output, err) = self.run_host_cmd('''/bin/bash -c "cd /home/wid/ov_oc && source setupvars.sh && cd /home/wid/ov_oc/samples/cpp/ && rm -rfd build && mkdir build && cd build && cmake .. -DOpenCV_DIR="home/wid/ov_oc/build_opencv/" -DOpenCL_LIBRARY=/usr/lib/x86_64-linux-gnu -DOpenCL_INCLUDE_DIR=/usr/include && echo 'run host command successfully.'"''', timeout=300)
         logging.debug(output+err)
         if 'run host command successfully.' not in output:
@@ -514,6 +547,12 @@ class ConfigureInputDevice():
         return (vendor, product)
 
     def get_display_info_list(self):
+        # (output, err) = self.run_host_cmd(self._adb + 'shell dumpsys SurfaceFlinger --display-id')
+        # re_display_id = re.compile('Display (\d+) \((.*)\): port=(\d+) pnpId=(.*) displayName="(.*)"')
+        # for line in output.split('\n'):
+        #     s = re.search(re_display_id, line)
+        #     if s and len(s.groups()) == 5:
+        #         pass
         (output, err) = self.run_host_cmd(self._adb + 'shell dumpsys input')
         display_info_flag = False
         display_info_list = []
@@ -535,9 +574,19 @@ class ConfigureInputDevice():
                 display_info['uniqueId'] = s.group(2)
                 display_info['port'] = s.group(3)
                 display_info['orientation'] = s.group(4)
+            else:
+                display_info['displayId'] = ''
+                display_info['uniqueId'] = ''
+                display_info['port'] = ''
+                display_info['orientation'] = ''
         logging.debug('display_info_list')
         logging.debug(str(display_info_list))
-        return display_info_list
+        new_list = []
+        for display_info in display_info_list:
+            new_id_list = [i['displayId'] for i in new_list if 'displayId' in i]
+            if display_info['displayId'] not in new_id_list:
+                new_list.append(display_info)
+        return new_list
 
     def plugin_detect_input_device(self, device, device_class, dest):
         input_device = None
@@ -686,7 +735,7 @@ if __name__ == "__main__":
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     outputdir = os.path.join(os.getcwd(), '_log_'+timestamp)
     
-    parser = argparse.ArgumentParser(description='configure demo setup.')
+    parser = argparse.ArgumentParser(description='IVI POC Demo config tool')
     parser.add_argument("-i", "--ip", dest="ip", default=None,
                     help="IP Address of Android")
     parser.add_argument("-l", "--loglevel", dest="loglevel", default='INFO',
@@ -711,7 +760,8 @@ if __name__ == "__main__":
 
     config = ConfigureInputDevice(args.outputdir)
     config.setup_adb_connection(args.ip)
-    configed = config.config_docker_proxy()
+    configed = False
+    # configed = config.config_docker_proxy()
     if not configed:
         config.configure_touch_for_android()
         config.enable_multiple_hardware_plan()
