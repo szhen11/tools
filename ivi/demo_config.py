@@ -153,10 +153,12 @@ class ConfigureInputDevice():
             logging.error('install TouchMe.apk failed: '+err)
         index = 0
         for display_info in display_info_list:
+            # if 'DeviceType' not in display_info or 'TOUCH' not in display_info['DeviceType']:
+            #     continue
             index += 1
             for i in range(TOUCH_DETECT_RETRY_TIMES):
                 print('-'*20+'{:-<{width}}'.format('Step 5.4.{}. detect the touch screen for Display {}'.format(index, display_info['uniqueId']), width=80))
-                logging.info('Starting to detect touch screen for Display: Id={} uniqueId={} port={} ...'.format(display_info['displayId'], display_info['uniqueId'], display_info['port']))
+                logging.info('Starting to detect touch screen for Display: Id={} uniqueId={} port={} physicalFrame={}...'.format(display_info['displayId'], display_info['uniqueId'], display_info['port'], display_info['physicalFrame']))
                 logging.info('Launching TouchMe Application on Display {}'.format(display_info['uniqueId']))
                 self.run_host_cmd('{} shell am force-stop com.intel.touchme'.format(self._adb))
                 self.run_host_cmd('{} shell am start --user 10 --display {} -n "com.intel.touchme/com.intel.touchme.MainActivity" -a android.intent.action.MAIN -c android.intent.category.LAUNCHER'.format(self._adb, display_info['displayId']))
@@ -166,7 +168,7 @@ class ConfigureInputDevice():
                 print('         Or press n and Enter to ignore this step if the screen which launching TouchMe App is untouchable: '.format(index))
                 choice = input('INFO     [y/n] ')
                 if choice == 'n':
-                    logging.info('You selected n, ignore Step 1.{}.'.format(index))
+                    logging.info('You selected n, ignore this step to detect Display {}.'.format(display_info['uniqueId']))
                     self.run_host_cmd(self._adb + '''shell "ps -ef|grep getevent|grep -v grep|awk '{print \$2}'|xargs kill -9"''')
                     break
                 else:
@@ -184,12 +186,23 @@ class ConfigureInputDevice():
                                 event_list.append(event)
                     for event in event_list:
                         for input_device in input_device_list:
-                            # if input_device['Path'] == event and 'TOUCH | TOUCH_MT | EXTERNAL' in input_device['Classes']:
-                            if input_device['Path'] == event and 'TOUCH' in input_device['Classes']:
+                            if input_device['Path'] == event and 'TOUCH | TOUCH_MT | EXTERNAL' in input_device['Classes']:
+                            #if input_device['Path'] == event and 'TOUCH' in input_device['Classes']:
                                 touch_device = input_device
                                 break
                     if touch_device:
-                        logging.info('Detected current touch screen {}, start to create idc file for it'.format(touch_device['Name']))
+                        '''tdi = None
+                        for di in display_info_list:
+                            if 'devices' in di and str(touch_device['ID']) in di['devices']:
+                                tdi = di
+                        if tdi is None:
+                            logging.warning("Can't detected current touch screen for event {}".format(str(event_list)))
+                        else:
+                            logging.info('Detected current touch screen {}.'.format(touch_device['Name']))
+                            touch_device_list.append([tdi, touch_device])
+                            logging.debug(touch_device)
+                            logging.debug(tdi)'''
+                        logging.info('Detected current touch screen {}.'.format(touch_device['Name']))
                         touch_device_list.append([display_info, touch_device])
                         break
                     else:
@@ -208,14 +221,30 @@ class ConfigureInputDevice():
                             name = name.replace(char, '_')
                         self.run_host_cmd(self._adb+'shell rm -rf /system/usr/idc/{}.idc'.format(name))
 
-        if len(touch_device_list) == 2 \
-                and touch_device_list[0][1]['vendor'] == touch_device_list[1][1]['vendor'] \
-                and touch_device_list[0][1]['product'] == touch_device_list[1][1]['product']:
-            # Creating idc file for 2 touch devices with same manufacturers 
-            for touch_device in touch_device_list:
-                display_info = touch_device[0]
-                touch_screen = touch_device[1]
-                logging.info('Starting to create idc file for touch screen: {}. {}'.format(display_info['displayId'], touch_screen['Name']))
+        new_vendor_product_list = []
+        for touch_device in touch_device_list:
+            input_device = touch_device[1]
+            if 'vendor' in input_device and 'product' in input_device:
+                new_vendor_product_list.append([input_device['vendor'], input_device['product']])
+
+
+        #if True: 
+        #if len(touch_device_list) == 2 \
+        #        and touch_device_list[0][1]['vendor'] == touch_device_list[1][1]['vendor'] \
+        #        and touch_device_list[0][1]['product'] == touch_device_list[1][1]['product']:
+        # Creating idc file for 2 touch devices with same manufacturers 
+        for touch_device in touch_device_list:
+            display_info = touch_device[0]
+            touch_screen = touch_device[1]
+            logging.debug(touch_screen)
+            logging.debug(display_info)
+            logging.info('Starting to create idc file for touch screen: {}. {} {}'.format(display_info['displayId'], display_info['uniqueId'], touch_screen['Name']))
+            vp_num = 0
+            for vp in new_vendor_product_list:
+                if vp[0] == touch_screen['vendor'] and vp[1] == touch_screen['product']:
+                    vp_num += 1
+            if vp_num > 1:
+                logging.debug('There are duplicated vendor+product ids for touch devices.')
                 name = touch_screen['Location'].strip()
                 char_list = '/,:.'
                 for char in char_list:
@@ -229,16 +258,13 @@ class ConfigureInputDevice():
                 (output, err) = self.run_host_cmd(self._adb + 'shell cat /system/usr/idc/{}'.format('{}.idc'.format(name)))
                 if display_info['uniqueId'] in output:
                     logging.debug(output)
-                    logging.info('Creating idc file for Touch Display {} successfully.'.format(display_info['displayId']))
+                    logging.info('Creating idc file {} for Touch Display {} successfully.'.format('{}.idc'.format(name), display_info['uniqueId']))
                 else:
-                    logging.error('Creating idc file for Touch Display {} failed.'.format(display_info['displayId']))
+                    logging.error('Creating idc file {} for Touch Display {} failed.'.format('{}.idc'.format(name), display_info['uniqueId']))
                     logging.error(output) if output else ''
                     logging.error(err) if err else ''
-        else:
-            for touch_device in touch_device_list:
-                display_info = touch_device[0]
-                touch_screen = touch_device[1]
-                logging.info('Starting to create idc file for touch screen: {}.{}'.format(display_info['displayId'], touch_screen['Name']))
+            else:
+                logging.debug('No duplicated vendor+product ids for touch devices.')
                 idc_file_name = os.path.join(self._outputdir,  
                     'Vendor_{}_Product_{}.idc'.format(touch_screen['vendor'], touch_screen['product']))
                 with open(idc_file_name, 'w') as f:
@@ -249,9 +275,9 @@ class ConfigureInputDevice():
                 (output, err) = self.run_host_cmd(self._adb + 'shell cat /system/usr/idc/{}'.format('Vendor_{}_Product_{}.idc'.format(touch_screen['vendor'], touch_screen['product'])))
                 if display_info['uniqueId'] in output:
                     logging.debug(output)
-                    logging.info('Creating idc file for Touch Display {} successfully.'.format(display_info['displayId']))
+                    logging.info('Creating idc file {} for Touch Display {} successfully.'.format('Vendor_{}_Product_{}.idc'.format(touch_screen['vendor'], touch_screen['product']), display_info['uniqueId']))
                 else:
-                    logging.error('Creating idc file for Touch Display {} failed.'.format(display_info['displayId']))
+                    logging.error('Creating idc file {} for Touch Display {} failed.'.format('Vendor_{}_Product_{}.idc'.format(touch_screen['vendor'], touch_screen['product']), display_info['uniqueId']))
                     logging.error(output) if output else ''
                     logging.error(err) if err else ''
         # print('='*20+'{:=<{width}}'.format(' Step 1. finished.', width=80))
@@ -556,6 +582,47 @@ class ConfigureInputDevice():
         (output, err) = self.run_host_cmd(self._adb + 'shell dumpsys input')
         display_info_flag = False
         display_info_list = []
+        display_info = {}
+        '''re_viewport = re.compile('displayId=(\d+), uniqueId=(.*), port=(\d+), orientation=(\d+), logicalFrame')
+        for line in output.split('\n'):
+            if line.strip().startswith('Input Reader State'):
+                display_info_flag = True
+            elif line.strip() == 'Configuration:':
+                display_info_flag = False
+                break
+            elif line.strip().startswith('Device ') and display_info_flag:
+                display_info = {'Name': line.strip().split(':')[1] if len(line.strip().split(':'))>1 else ''}
+            elif line.strip().startswith('EventHub Devices:') and display_info_flag:
+                if display_info:
+                    display_info['devices'] = line.strip().split(':')[1].strip()[1:-1].split()
+            elif line.strip().startswith('DeviceType:') and display_info_flag:
+                if 'TOUCH' not in line:
+                    display_info = {}
+                    logging.debug('NO TOUCH!!!!!!!')
+                    logging.debug(line)
+                if display_info:
+                    display_info['DeviceType'] = line.strip().split(':')[1]
+            elif line.strip().startswith('Viewport INTERNAL:') and display_info_flag:
+                if not display_info:
+                    continue
+                s = re.search(re_viewport, line.strip())
+                if s and len(s.groups()) == 4:
+                    display_info['displayId'] = s.group(1)
+                    display_info['uniqueId'] = s.group(2)
+                    display_info['port'] = s.group(3)
+                    display_info['orientation'] = s.group(4)
+                else:
+                    display_info['displayId'] = ''
+                    display_info['uniqueId'] = ''
+                    display_info['port'] = ''
+                    display_info['orientation'] = ''
+                if 'devices' in display_info and display_info['devices']:
+                    display_info_list.append(display_info)
+                display_info = {}
+        logging.debug('display_info_list')
+        logging.debug(str(display_info_list))
+        return display_info_list'''
+
         for line in output.split('\n'):
             if line.strip() == 'Configuration:':
                 display_info_flag = True
@@ -565,28 +632,35 @@ class ConfigureInputDevice():
                 if line.strip().startswith('Viewport INTERNAL:') or line.strip().startswith('Viewport EXTERNAL:'):
                     display_info_list.append({'Viewport': line.strip()[18:]})
                 continue
-        re_viewport = re.compile('displayId=(\d+), uniqueId=(.*), port=(\d+), orientation=(\d+), logicalFrame')
+        re_viewport = re.compile('displayId=(\d+), uniqueId=(.*), port=(\d+), orientation=(\d+), logicalFrame=(.*), physicalFrame=(.*), deviceSize=(.*)')
         for display_info in display_info_list:
             viewport = display_info['Viewport']
             s = re.search(re_viewport, viewport.strip())
-            if s and len(s.groups()) == 4:
+            if s and len(s.groups()) == 7:
                 display_info['displayId'] = s.group(1)
                 display_info['uniqueId'] = s.group(2)
                 display_info['port'] = s.group(3)
                 display_info['orientation'] = s.group(4)
+                display_info['logicalFrame'] = s.group(5)
+                display_info['physicalFrame'] = s.group(6)
+                display_info['deviceSize'] = s.group(7)
             else:
                 display_info['displayId'] = ''
                 display_info['uniqueId'] = ''
                 display_info['port'] = ''
                 display_info['orientation'] = ''
+                display_info['logicalFrame'] = '' 
+                display_info['physicalFrame'] = ''
+                display_info['deviceSize'] = ''
         logging.debug('display_info_list')
         logging.debug(str(display_info_list))
-        new_list = []
-        for display_info in display_info_list:
-            new_id_list = [i['displayId'] for i in new_list if 'displayId' in i]
-            if display_info['displayId'] not in new_id_list:
-                new_list.append(display_info)
-        return new_list
+        return display_info_list
+        # new_list = []
+        # for display_info in display_info_list:
+        #     new_id_list = [i['displayId'] for i in new_list if 'displayId' in i]
+        #     if display_info['displayId'] not in new_id_list:
+        #         new_list.append(display_info)
+        # return new_list
 
     def plugin_detect_input_device(self, device, device_class, dest):
         input_device = None
@@ -764,9 +838,9 @@ if __name__ == "__main__":
     # configed = config.config_docker_proxy()
     if not configed:
         config.configure_touch_for_android()
+        config.configure_keyboard_mouse_for_container()
         config.enable_multiple_hardware_plan()
         config.configure_audio()
-        config.configure_keyboard_mouse_for_container()
         config.download_install_openvino()
         # config.install_resources()
     config.reboot_android()
