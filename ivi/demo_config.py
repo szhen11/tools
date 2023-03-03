@@ -416,6 +416,12 @@ class ConfigureInputDevice():
         if not keyboards:
             logging.warning('Not detect Keyboard device connected to the IVI board.')
 
+        logging.info('Do you want to configure Keyboard/Mouse isolated to container? Press n and enter to ignore this step, press other keys to continue: ')
+        choice = input('INFO     [y/n] ')
+        if choice in ['n']:
+            logging.warning('You selected n, ignore this step.')
+            return
+        
         selected_mouses = self.select_input_device(mouses, 'Mouse', 1)
         selected_keyboards = self.select_input_device(keyboards, 'Keyboard', 1)
         disable_device_ids = None
@@ -744,23 +750,27 @@ class ConfigureInputDevice():
             logging.info('Select the detected {} {} device(s) isolated for container'.format(len(input_device_list), device_type))
             selected_input_devices = input_device_list
         elif len(input_device_list) > num:
-            select_msg = 'INFO    Detected more than {} {} device.\nWhich {} to be configured to docker container? Type device ID and Enter to select or press Enter to select the first one:\n'.format(num, device_type, device_type)
+            select_msg = 'INFO    Detected more than {} {} device.\n         Which {} to be configured to docker container? Type device ID and Enter to select or press Enter to select the first one:\n'.format(num, device_type, device_type)
             for input_device in input_device_list:
                 select_msg += '        ID:{}  Name:{}  Location:{}  Identifier:{}\n'.format(input_device['ID'], input_device['Name'], input_device['Location'], input_device['Identifier'])
             select_msg += 'INFO    Type ID(s): '
-            id_list = [input_device_list['ID'] for input_device in input_device_list]
+            id_list = [str(input_device['ID']) for input_device in input_device_list]
             selected_ids = []
             for i in range(10):
                 ids = input(select_msg)
                 selected_ids = []
-                if sid == '':
+                if ids == '':
                     selected_ids = id_list[:num]
                     logging.info('Selected the first {} device(s) by default.'.format(num))
                     break
                 sids = ids.split(',')
                 for sid in sids:
-                    if sid.strip() in id_lists:
+                    if sid.strip() in id_list:
                         selected_ids.append(sid.strip())
+                #print(ids)
+                #print(sids)
+                #print(selected_ids)
+                #print(id_list)
                 if len(selected_ids) == num:
                     logging.info('Selected device ID(s): {}'.format(','.join(selected_ids)))
                     break
@@ -771,7 +781,7 @@ class ConfigureInputDevice():
                 selected_ids = id_list[:num]
             
             for input_device in input_device_list:
-                if input_device['ID'] in selected_ids:
+                if str(input_device['ID']) in selected_ids:
                     selected_input_devices.append(input_device)
         return selected_input_devices
 
