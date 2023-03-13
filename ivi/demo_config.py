@@ -184,7 +184,7 @@ class ConfigureInputDevice():
                             event = line.strip().split(':')[0].strip()
                             if event not in event_list:
                                 event_list.append(event)
-                    for event in event_list:
+                    for event in event_list[::-1]:
                         for input_device in input_device_list:
                             if input_device['Path'] == event and 'TOUCH | TOUCH_MT | EXTERNAL' in input_device['Classes']:
                             #if input_device['Path'] == event and 'TOUCH' in input_device['Classes']:
@@ -335,6 +335,7 @@ class ConfigureInputDevice():
     
     def configure_audio(self):
         print('='*20+'{:=<{width}}'.format(' Step 6.3. Linux Container Audio Configuration ', width=80))
+        logging.info('Please make sure the configuration script run in container for this step!')
         logging.info('Starting to install speaker-test to test the audio in container')
         (output, err) = self.run_host_cmd('sudo apt install -y alsa-utils && echo "package install successfully."')
         logging.debug(output+err)
@@ -450,6 +451,7 @@ class ConfigureInputDevice():
 
     def download_install_openvino(self):
         print('='*20+'{:=<{width}}'.format(' Step 6.8. Download OpenVino from Ubuntu 22.04 and build OpenVino samples ', width=80))
+        logging.info('Please make sure the configuration script run in container for this step!')
         logging.info('Tring to get openvino_opencv_build.tar.gz...')
         # (output, err) = self.run_host_cmd('sudo apt install -y wget ssh && echo "package install successfully."')
         # logging.debug(output+err)
@@ -826,6 +828,8 @@ if __name__ == "__main__":
                     help="IP Address of Android")
     parser.add_argument("-o", "--outputdir", dest="outputdir", default=outputdir,
                     help="the directory to store logs")
+    parser.add_argument("-f", "--function", dest="function", default='touch,keyboard,mouse',
+                    help="specify what functions to be configured")
     args = parser.parse_args()
 
     if args.loglevel == 'DEBUG':
@@ -847,11 +851,16 @@ if __name__ == "__main__":
     configed = False
     # configed = config.config_docker_proxy()
     if not configed:
-        config.configure_touch_for_android()
-        config.configure_keyboard_mouse_for_container()
-        config.enable_multiple_hardware_plan()
-        config.configure_audio()
-        config.download_install_openvino()
+        if 'touch' in args.function.lower():
+            config.configure_touch_for_android()
+        if 'keyboard' in args.function.lower() or 'mouse' in args.function.lower():
+            config.configure_keyboard_mouse_for_container()
+        if 'perf' in args.function.lower():
+            config.enable_multiple_hardware_plan()
+        if 'audio' in args.function.lower():
+            config.configure_audio()
+        if 'openvino' in args.function.lower():
+            config.download_install_openvino()
         # config.install_resources()
     config.reboot_android()
     print('='*20+'{:=<{width}}'.format(' ALL DONE ', width=80))
