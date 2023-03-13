@@ -427,11 +427,11 @@ class ConfigureInputDevice():
         selected_keyboards = self.select_input_device(keyboards, 'Keyboard', 1)
         disable_device_ids = None
         if selected_mouses and selected_keyboards:
-            disable_device_ids = '{}:{},{}:{}'.format(selected_mouses[0]['vendor'], selected_mouses[0]['product'], selected_keyboards[0]['vendor'], selected_keyboards[0]['product'])
+            disable_device_ids = '{}:{},{}:{}'.format(selected_mouses[0]['vendor'].lstrip('0'), selected_mouses[0]['product'].lstrip('0'), selected_keyboards[0]['vendor'].lstrip('0'), selected_keyboards[0]['product'].lstrip('0'))
         elif selected_mouses:
-            disable_device_ids = '{}:{}'.format(selected_mouses[0]['vendor'], selected_mouses[0]['product'])
+            disable_device_ids = '{}:{}'.format(selected_mouses[0]['vendor'].lstrip('0'), selected_mouses[0]['product'].lstrip('0'))
         elif selected_keyboards:
-            disable_device_ids = '{}:{}'.format(selected_keyboards[0]['vendor'], selected_keyboards[0]['product'])
+            disable_device_ids = '{}:{}'.format(selected_keyboards[0]['vendor'].lstrip('0'), selected_keyboards[0]['product'].lstrip('0'))
         else:
             logging.warning('No keyboard and Mouse to be isolated for container.')
 
