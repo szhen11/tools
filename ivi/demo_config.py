@@ -401,6 +401,7 @@ class ConfigureInputDevice():
     def configure_keyboard_mouse_for_container(self):
         #print('-'*20+'{:60s}'.format('Step 2. configure keyboard and mouse for container')+'-'*20)
         print('='*20+'{:=<{width}}'.format(' Step 6.4. configure keyboard and mouse for container ', width=80))
+        #self.run_host_cmd(self._adb + '''shell "setprop persist.sys.disable.deviceid ''"''')
         input_device_list = self.get_input_device_list()
         keyboards = []
         mouses = []
@@ -416,6 +417,10 @@ class ConfigureInputDevice():
             logging.warning('Not detect Mouse device connected to the IVI board.')
         if not keyboards:
             logging.warning('Not detect Keyboard device connected to the IVI board.')
+        if not mouses or not keyboards:
+            logging.warning('If you have aleady plugged the Mouse(s) or Keyboard(s)to the IVI board, ')
+            logging.warning('please run below command, reboot android, and then retry this tool to configure:')
+            logging.warning('''    adb shell "setprop persist.sys.disable.deviceid ''"''')
 
         logging.info('Do you want to configure Keyboard/Mouse isolated to container? Press n and enter to ignore this step, press other keys to continue: ')
         choice = input('INFO     [y/n] ')
@@ -446,6 +451,65 @@ class ConfigureInputDevice():
                 logging.error('Configuration for isolating the device(s) from Android host failed:')
                 logging.error(output) if output else ''
                 logging.error(err) if err else ''
+        
+        #ignore the unselected devices in container
+        ignore_input_path = '/etc/udev/rules.d/'
+        ignore_keyboard_name = '99-ignore-keyboard.rules'
+        ignore_keyboards = []
+        ignore_mouse_name = '99-ignore-mouse.rules'
+        ignore_mouses = []
+        sel_ids = [s['ID'] for s in selected_mouses]
+        for mouse in mouses:
+            if mouse['ID'] not in sel_ids:
+                ignore_mouses.append(mouse)
+        sel_ids = [s['ID'] for s in selected_keyboards]
+        for keyboard in keyboards:
+            if keyboard['ID'] not in sel_ids:
+                ignore_keyboards.append(keyboard)
+        ignore_info='''ACTION=="add\|change", KERNEL=="event[0-9]*", \\
+   ENV{ID_VENDOR_ID}=="VID", \\
+   ENV{ID_MODEL_ID}=="PID", \\
+   ENV{LIBINPUT_IGNORE_DEVICE}="1"
+'''
+        ignore_mouse_info = ''
+        for mouse in ignore_mouses:
+            logging.debug('Start to ignore mouse {} in container'.format(mouse['ID']))
+            if selected_mouses and selected_mouses[0]['vendor'] != mouse['vendor'] and selected_mouses[0]['product'] != mouse['product']:
+                ignore_mouse_info += ignore_info.replace('VID', mouse['vendor']).replace('PID', mouse['product'])
+            else:
+                logging.info('This mouse has same vid,pid with selected mouse, so do not ignore it in container.')
+        if not ignore_mouse_info:
+            logging.info('No mouse need to be ignored for container')
+            ignore_mouse_info = ignore_info
+        if ignore_mouse_info:
+            if ignore_info != ignore_mouse_info:
+                logging.info('Create 99-ignore-mouse.rules to ignore unselected mouse(s) for container')
+            logging.debug(ignore_mouse_info)
+            with open(os.path.join(self._outputdir, ignore_mouse_name), 'w') as f:
+                f.write(ignore_mouse_info)
+            self.run_host_cmd(self._adb + 'push {} /data/local/'.format(os.path.join(self._outputdir, ignore_mouse_name)))
+            self.run_host_cmd(self._adb + 'shell docker cp /data/local/{} steam:/home/wid/'.format(ignore_mouse_name))
+            self.run_host_cmd(self._adb + '''shell "docker exec -t steam sudo bash -c 'cp /home/wid/{} {}'"'''.format(ignore_mouse_name, ignore_input_path))
+        ignore_keyboard_info = ''
+        for keyboard in ignore_keyboards:
+            logging.debug('Start to ignore keyboard {} in container'.format(keyboard['ID']))
+            if selected_keyboards and selected_keyboards[0]['vendor'] != keyboard['vendor'] and selected_keyboards[0]['product'] != keyboard['product']:
+                ignore_keyboard_info += ignore_info.replace('VID', keyboard['vendor']).replace('PID', keyboard['product'])
+            else:
+                logging.debug('This keyboard has same vid,pid with selected keyboard, so do not ignore it in container.')
+        if not ignore_keyboard_info:
+            logging.info('No keyboard need to be ignored for container')
+            ignore_keyboard_info = ignore_info
+        if ignore_keyboard_info:
+            if ignore_info != ignore_keyboard_info:
+                logging.debug('Create 99-ignore-keyboard.rules to ignore unselected keyboard(s) for container')
+            logging.debug(ignore_keyboard_info)
+            with open(os.path.join(self._outputdir, ignore_keyboard_name), 'w') as f:
+                f.write(ignore_keyboard_info)
+            self.run_host_cmd(self._adb + 'push {} /data/local/'.format(os.path.join(self._outputdir, ignore_keyboard_name)))
+            self.run_host_cmd(self._adb + 'shell docker cp /data/local/{} steam:/home/wid/'.format(ignore_keyboard_name))
+            self.run_host_cmd(self._adb + '''shell "docker exec -t steam sudo bash -c 'cp /home/wid/{} {}'"'''.format(ignore_keyboard_name, ignore_input_path))
+
         # print('='*20+'{:=<{width}}'.format(' Step 2. finished. ', width=80))
         logging.info('Step 6.4 finished.')
 
@@ -752,10 +816,10 @@ class ConfigureInputDevice():
             logging.info('Select the detected {} {} device(s) isolated for container'.format(len(input_device_list), device_type))
             selected_input_devices = input_device_list
         elif len(input_device_list) > num:
-            select_msg = 'INFO    Detected more than {} {} device.\n         Which {} to be configured to docker container? Type device ID and Enter to select or press Enter to select the first one:\n'.format(num, device_type, device_type)
+            select_msg = 'INFO     Detected more than {} {} device.\n         Which {} to be configured to docker container? Type device ID and Enter to select or press Enter to select the first one:\n'.format(num, device_type, device_type)
             for input_device in input_device_list:
-                select_msg += '        ID:{}  Name:{}  Location:{}  Identifier:{}\n'.format(input_device['ID'], input_device['Name'], input_device['Location'], input_device['Identifier'])
-            select_msg += 'INFO    Type ID(s): '
+                select_msg += '             ID:{}  Name:{}  Location:{}  Identifier:{}\n'.format(input_device['ID'], input_device['Name'], input_device['Location'], input_device['Identifier'])
+            select_msg += 'INFO     Type ID(s): '
             id_list = [str(input_device['ID']) for input_device in input_device_list]
             selected_ids = []
             for i in range(10):
