@@ -22,6 +22,11 @@ Modified:
 import os, time, argparse, subprocess
 import re, traceback, logging, datetime, ipaddress, json
 
+CLASSES_TOUCH_DEVICE = ['TOUCH | TOUCH_MT | EXTERNAL']
+CLASSES_KEYBOARD_DEVICE = ['KEYBOARD | ALPHAKEY | EXTERNAL']
+CLASSES_MOUSE_DEVICE = ['CURSOR | EXTERNAL']
+CLASSES_JOYSTICK_DEVICE = ['KEYBOARD | GAMEPAD | JOYSTICK | VIBRATOR | BATTERY | LIGHT | EXTERNAL']
+
 class ConfigureInputDevice():
     def __init__(self, outputdir='.'):
         self._adb = 'adb '
@@ -186,7 +191,7 @@ class ConfigureInputDevice():
                                 event_list.append(event)
                     for event in event_list[::-1]:
                         for input_device in input_device_list:
-                            if input_device['Path'] == event and 'TOUCH | TOUCH_MT | EXTERNAL' in input_device['Classes']:
+                            if input_device['Path'] == event and input_device['Classes'] in CLASSES_TOUCH_DEVICE:
                             #if input_device['Path'] == event and 'TOUCH' in input_device['Classes']:
                                 touch_device = input_device
                                 break
@@ -210,7 +215,7 @@ class ConfigureInputDevice():
         
         if touch_device_list:
             for input_device in input_device_list:
-                if 'Classes' in input_device and 'TOUCH | TOUCH_MT | EXTERNAL' in input_device['Classes']:
+                if 'Classes' in input_device and input_device['Classes'] in CLASSES_TOUCH_DEVICE:
                     logging.debug('Remove idc files for {} if existed'.format(input_device['Name']))
                     if input_device['vendor'] and input_device['product']:
                         self.run_host_cmd(self._adb+'shell rm -rf /system/usr/idc/Vendor_{}_Product_{}.idc'.format(input_device['vendor'], input_device['product']))
@@ -280,6 +285,41 @@ class ConfigureInputDevice():
                     logging.error('Creating idc file {} for Touch Display {} failed.'.format('Vendor_{}_Product_{}.idc'.format(touch_screen['vendor'], touch_screen['product']), display_info['uniqueId']))
                     logging.error(output) if output else ''
                     logging.error(err) if err else ''
+
+        """ignore_info='''ACTION=="add\|change", KERNEL=="event[0-9]*", \\
+   ENV{ID_VENDOR_ID}=="VID", \\
+   ENV{ID_MODEL_ID}=="PID", \\
+   ENV{LIBINPUT_IGNORE_DEVICE}="1"
+'''
+        ignore_input_path = '/etc/udev/rules.d/'
+        ignore_touch_name = '99-ignore-touch.rules'
+        ignore_touch_info = ''
+        ignore_touch_vid_pid_list = []
+        for vp in new_vendor_product_list:
+            existed = False
+            for vp2 in ignore_touch_vid_pid_list:
+                if vp2[0] == vp[0] and vp2[1] == vp[1]:
+                    existed = True
+                    break
+            if not existed:
+                ignore_touch_vid_pid_list.append(vp)
+        for vp in ignore_touch_vid_pid_list:
+            vendor = vp[0]
+            product = vp[1]
+            logging.debug('Start to ignore touch device with vendor: {} product: {} in container'.format(vendor, product))
+            ignore_touch_info += ignore_info.replace('VID', vendor).replace('PID', product)
+        if not ignore_touch_info:
+            logging.info('No touch device need to be ignored for container')
+        else:
+            #if ignore_info != ignore_keyboard_info:
+            #    logging.debug('Create 99-ignore-keyboard.rules to ignore unselected keyboard(s) for container')
+            logging.debug(ignore_touch_info)
+            with open(os.path.join(self._outputdir, ignore_touch_name), 'w') as f:
+                f.write(ignore_touch_info)
+            self.run_host_cmd(self._adb + 'push {} /data/local/'.format(os.path.join(self._outputdir, ignore_touch_name)))
+            self.run_host_cmd(self._adb + 'shell docker cp /data/local/{} steam:/home/wid/'.format(ignore_touch_name))
+            self.run_host_cmd(self._adb + '''shell "docker exec -t steam sudo bash -c 'cp /home/wid/{} {}'"'''.format(ignore_touch_name, ignore_input_path))
+        """
         # print('='*20+'{:=<{width}}'.format(' Step 1. finished.', width=80))
         logging.info('Step 5.4 finished.')
     
@@ -398,31 +438,37 @@ class ConfigureInputDevice():
         # print('='*20+'{:=<{width}}'.format(' Step 3. finished. ', width=80))
         logging.info('Step 6.3 finished.')
     
-    def configure_keyboard_mouse_for_container(self):
+    def configure_keyboard_mouse_joystick_for_container(self):
         #print('-'*20+'{:60s}'.format('Step 2. configure keyboard and mouse for container')+'-'*20)
-        print('='*20+'{:=<{width}}'.format(' Step 6.4. configure keyboard and mouse for container ', width=80))
+        print('='*20+'{:=<{width}}'.format(' Step 6.4. configure keyboard, mouse and joystick for container ', width=80))
         #self.run_host_cmd(self._adb + '''shell "setprop persist.sys.disable.deviceid ''"''')
         input_device_list = self.get_input_device_list()
         keyboards = []
         mouses = []
+        joysticks = []
         for input_device in input_device_list:
-            if 'Classes' in input_device and input_device['Classes'] == 'KEYBOARD | ALPHAKEY | EXTERNAL' \
+            if 'Classes' in input_device and input_device['Classes'] in CLASSES_KEYBOARD_DEVICE \
                     and input_device['vendor'] is not None and input_device['product'] is not None:
                 keyboards.append(input_device)
-            elif 'Classes' in input_device and input_device['Classes'] == 'CURSOR | EXTERNAL' \
+            elif 'Classes' in input_device and input_device['Classes'] in CLASSES_MOUSE_DEVICE \
                     and input_device['vendor'] is not None and input_device['product'] is not None:
                 mouses.append(input_device)
+            elif 'Classes' in input_device and input_device['Classes'] in CLASSES_JOYSTICK_DEVICE \
+                    and input_device['vendor'] is not None and input_device['product'] is not None:
+                joysticks.append(input_device)
 
         if not mouses:
             logging.warning('Not detect Mouse device connected to the IVI board.')
         if not keyboards:
             logging.warning('Not detect Keyboard device connected to the IVI board.')
+        if not joysticks:
+            logging.warning('Not detect PS4 Joystick device connected to the IVI board.')
         if not mouses or not keyboards:
-            logging.warning('If you have aleady plugged the Mouse(s) or Keyboard(s)to the IVI board, ')
+            logging.warning('If you have aleady plugged the Mouse(s) or Keyboard(s) or PS4 Joystick to the IVI board, ')
             logging.warning('please run below command, reboot android, and then retry this tool to configure:')
             logging.warning('''    adb shell "setprop persist.sys.disable.deviceid ''"''')
 
-        logging.info('Do you want to configure Keyboard/Mouse isolated to container? Press n and enter to ignore this step, press other keys to continue: ')
+        logging.info('Do you want to configure Keyboard/Mouse/Joystick isolated to container? Press n and enter to ignore this step, press other keys to continue: ')
         choice = input('INFO     [y/n] ')
         if choice in ['n']:
             logging.warning('You selected n, ignore this step.')
@@ -430,18 +476,26 @@ class ConfigureInputDevice():
         
         selected_mouses = self.select_input_device(mouses, 'Mouse', 1)
         selected_keyboards = self.select_input_device(keyboards, 'Keyboard', 1)
+        selected_joysticks = self.select_input_device(joysticks, 'Joystick', 1)
         disable_device_ids = None
-        if selected_mouses and selected_keyboards:
-            disable_device_ids = '{}:{},{}:{}'.format(selected_mouses[0]['vendor'].lstrip('0'), selected_mouses[0]['product'].lstrip('0'), selected_keyboards[0]['vendor'].lstrip('0'), selected_keyboards[0]['product'].lstrip('0'))
-        elif selected_mouses:
-            disable_device_ids = '{}:{}'.format(selected_mouses[0]['vendor'].lstrip('0'), selected_mouses[0]['product'].lstrip('0'))
-        elif selected_keyboards:
-            disable_device_ids = '{}:{}'.format(selected_keyboards[0]['vendor'].lstrip('0'), selected_keyboards[0]['product'].lstrip('0'))
-        else:
-            logging.warning('No keyboard and Mouse to be isolated for container.')
+        disable_device_id_list = []
 
-        if disable_device_ids:
+        if selected_mouses:
+            disable_device_id_list.append('{}:{}'.format(selected_mouses[0]['vendor'].lstrip('0'), selected_mouses[0]['product'].lstrip('0')))
+        else:
+            logging.warning('No Mouse to be isolated for container.')
+        if selected_keyboards:
+            disable_device_id_list.append('{}:{}'.format(selected_keyboards[0]['vendor'].lstrip('0'), selected_keyboards[0]['product'].lstrip('0')))
+        else:
+            logging.warning('No Keyboard to be isolated for container.')
+        if selected_joysticks:
+            disable_device_id_list.append('{}:{}'.format(selected_joysticks[0]['vendor'].lstrip('0'), selected_joysticks[0]['product'].lstrip('0')))
+        else:
+            logging.warning('No Joystick to be isolated for container.')
+
+        if disable_device_id_list:
             logging.info('Starting to disable the device(s) from Android host')
+            disable_device_ids = ','.join(disable_device_id_list)
             self.run_host_cmd(self._adb + 'shell "setprop persist.sys.disable.deviceid {}"'.format(disable_device_ids))
             (output, err) = self.run_host_cmd(self._adb + 'shell getprop persist.sys.disable.deviceid')
             if disable_device_ids in output:
@@ -458,6 +512,8 @@ class ConfigureInputDevice():
         ignore_keyboards = []
         ignore_mouse_name = '99-ignore-mouse.rules'
         ignore_mouses = []
+        ignore_joystick_name = '99-ignore-joystick.rules'
+        ignore_joysticks = []
         sel_ids = [s['ID'] for s in selected_mouses]
         for mouse in mouses:
             if mouse['ID'] not in sel_ids:
@@ -466,6 +522,10 @@ class ConfigureInputDevice():
         for keyboard in keyboards:
             if keyboard['ID'] not in sel_ids:
                 ignore_keyboards.append(keyboard)
+        sel_ids = [s['ID'] for s in selected_joysticks]
+        for joystick in joysticks:
+            if joystick['ID'] not in sel_ids:
+                ignore_joysticks.append(joystick)
         ignore_info='''ACTION=="add\|change", KERNEL=="event[0-9]*", \\
    ENV{ID_VENDOR_ID}=="VID", \\
    ENV{ID_MODEL_ID}=="PID", \\
@@ -509,6 +569,26 @@ class ConfigureInputDevice():
             self.run_host_cmd(self._adb + 'push {} /data/local/'.format(os.path.join(self._outputdir, ignore_keyboard_name)))
             self.run_host_cmd(self._adb + 'shell docker cp /data/local/{} steam:/home/wid/'.format(ignore_keyboard_name))
             self.run_host_cmd(self._adb + '''shell "docker exec -t steam sudo bash -c 'cp /home/wid/{} {}'"'''.format(ignore_keyboard_name, ignore_input_path))
+
+        ignore_joystick_info = ''
+        for joystick in ignore_joysticks:
+            logging.debug('Start to ignore joystick {} in container'.format(joystick['ID']))
+            if selected_joysticks and selected_joysticks[0]['vendor'] != joystick['vendor'] and selected_joysticks[0]['product'] != joystick['product']:
+                ignore_joystick_info += ignore_info.replace('VID', joystick['vendor']).replace('PID', joystick['product'])
+            else:
+                logging.debug('This joystick has same vid,pid with selected joystick, so do not ignore it in container.')
+        if not ignore_joystick_info:
+            logging.info('No joystick need to be ignored for container')
+            ignore_joystick_info = ignore_info
+        if ignore_joystick_info:
+            if ignore_info != ignore_joystick_info:
+                logging.debug('Create 99-ignore-joystick.rules to ignore unselected joystick(s) for container')
+            logging.debug(ignore_joystick_info)
+            with open(os.path.join(self._outputdir, ignore_joystick_name), 'w') as f:
+                f.write(ignore_joystick_info)
+            self.run_host_cmd(self._adb + 'push {} /data/local/'.format(os.path.join(self._outputdir, ignore_joystick_name)))
+            self.run_host_cmd(self._adb + 'shell docker cp /data/local/{} steam:/home/wid/'.format(ignore_joystick_name))
+            self.run_host_cmd(self._adb + '''shell "docker exec -t steam sudo bash -c 'cp /home/wid/{} {}'"'''.format(ignore_joystick_name, ignore_input_path))
 
         # print('='*20+'{:=<{width}}'.format(' Step 2. finished. ', width=80))
         logging.info('Step 6.4 finished.')
@@ -892,7 +972,7 @@ if __name__ == "__main__":
                     help="IP Address of Android")
     parser.add_argument("-o", "--outputdir", dest="outputdir", default=outputdir,
                     help="the directory to store logs")
-    parser.add_argument("-f", "--function", dest="function", default='touch,keyboard,mouse',
+    parser.add_argument("-f", "--function", dest="function", default='touch,keyboard,mouse,joystick',
                     help="specify what functions to be configured")
     args = parser.parse_args()
 
@@ -917,8 +997,8 @@ if __name__ == "__main__":
     if not configed:
         if 'touch' in args.function.lower():
             config.configure_touch_for_android()
-        if 'keyboard' in args.function.lower() or 'mouse' in args.function.lower():
-            config.configure_keyboard_mouse_for_container()
+        if 'keyboard' in args.function.lower() or 'mouse' in args.function.lower() or 'joystick' in args.function.lower():
+            config.configure_keyboard_mouse_joystick_for_container()
         if 'perf' in args.function.lower():
             config.enable_multiple_hardware_plan()
         if 'audio' in args.function.lower():
